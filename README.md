@@ -2,6 +2,14 @@
 
 *Minimal configuration with managed edge cases to deploy redis sentinel in kubernetes cluster*
 
+![Last Commit](https://img.shields.io/github/last-commit/pingmyheart/K8s-Redis-Sentinel)
+![Repo Size](https://img.shields.io/github/repo-size/pingmyheart/K8s-Redis-Sentinel)
+![Issues](https://img.shields.io/github/issues/pingmyheart/K8s-Redis-Sentinel)
+![Pull Requests](https://img.shields.io/github/issues-pr/pingmyheart/K8s-Redis-Sentinel)
+![License](https://img.shields.io/github/license/pingmyheart/K8s-Redis-Sentinel)
+![Top Language](https://img.shields.io/github/languages/top/pingmyheart/K8s-Redis-Sentinel)
+![Language Count](https://img.shields.io/github/languages/count/pingmyheart/K8s-Redis-Sentinel)
+
 ## Overview
 
 This repository provides a minimal configuration to deploy Redis Sentinel in a Kubernetes cluster. It includes handling
