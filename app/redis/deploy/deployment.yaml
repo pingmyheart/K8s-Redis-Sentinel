@@ -1,0 +1,140 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: redis
+  namespace: redis
+  labels:
+    app: redis
+spec:
+  serviceName: redis
+  replicas: 3
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app
+                      operator: In
+                      values:
+                        - redis
+                topologyKey: kubernetes.io/hostname
+      initContainers:
+        - name: copy-configuration-to-writable-directory
+          image: redis:8.2.5
+          imagePullPolicy: Always
+          command:
+            - sh
+            - -c
+            - cp /config/* /runtime-config
+          volumeMounts:
+            - mountPath: /config
+              name: redis
+            - mountPath: /runtime-config
+              name: runtime-directory
+        - name: init-config
+          image: ghcr.io/pingmyheart/k8s-redis-sentinel:8.2.5.dev0
+          imagePullPolicy: Always
+          command:
+            - sh
+            - -c
+            - sh /runtime-config/configure.sh
+          envFrom:
+            - secretRef:
+                name: redis
+          volumeMounts:
+            - mountPath: /config
+              name: redis
+            - mountPath: /runtime-config
+              name: runtime-directory
+      containers:
+        - name: redis
+          image: redis:8.2.5
+          ports:
+            - containerPort: 6379
+              name: master
+              protocol: TCP
+          envFrom:
+            - secretRef:
+                name: redis
+          imagePullPolicy: Always
+          command:
+            - sh
+            - -c
+            - sh /runtime-config/redis.sh
+          volumeMounts:
+            - mountPath: /runtime-config
+              name: runtime-directory
+          livenessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - REDISCLI_AUTH="$REDIS_PASSWORD" redis-cli -p 6379 ping | grep -q PONG
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - REDISCLI_AUTH="$REDIS_PASSWORD" redis-cli -p 6379 ping | grep -q PONG
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+        - name: redis-sentinel
+          image: redis:8.2.5
+          ports:
+            - containerPort: 26379
+              name: sentinel
+              protocol: TCP
+          envFrom:
+            - secretRef:
+                name: redis
+          imagePullPolicy: Always
+          command:
+            - sh
+            - -c
+            - sh /runtime-config/sentinel.sh
+          volumeMounts:
+            - mountPath: /runtime-config
+              name: runtime-directory
+          livenessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - REDISCLI_AUTH="$REDIS_PASSWORD" redis-cli -p 26379 ping
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - REDISCLI_AUTH="$REDIS_PASSWORD" redis-cli -p 26379 sentinel masters | grep -q mymaster
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+      serviceAccountName: redis-sa
+      volumes:
+        - name: redis
+          configMap:
+            name: redis
+        - name: runtime-directory
+          emptyDir: { }

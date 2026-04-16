@@ -1,0 +1,131 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: redis
+  namespace: redis
+data:
+  master.conf: |-
+    port 6379
+    bind 0.0.0.0
+    
+    # Persistence
+    appendonly no
+    
+    # Optional security
+    requirepass $REDIS_PASSWORD
+    masterauth $REDIS_PASSWORD
+    
+    # No Loss Config
+    min-replicas-to-write 1
+    min-replicas-max-lag 10
+  replica.conf: |-
+    port 6379
+    bind 0.0.0.0
+    
+    # Replica of master
+    replicaof master_host 6379
+    
+    # Auth (must match master)
+    masterauth $REDIS_PASSWORD
+    requirepass $REDIS_PASSWORD
+    
+    # Persistence
+    appendonly no
+    
+    # No Loss Config
+    min-replicas-to-write 1
+    min-replicas-max-lag 10
+  sentinel.conf: |-
+    port 26379
+    bind 0.0.0.0
+    
+    sentinel monitor mymaster master_host 6379 2
+    sentinel auth-pass mymaster $REDIS_PASSWORD
+    
+    # Time (ms) before considering master down
+    sentinel down-after-milliseconds mymaster 5000
+    
+    # Failover timeout
+    sentinel failover-timeout mymaster 10000
+    
+    # Number of replicas that can sync in parallel
+    sentinel parallel-syncs mymaster 1
+  redis.sh: |-
+    #!/bin/sh
+    redis-server /runtime-config/redis.conf
+  sentinel.sh: |-
+    #!/bin/sh
+    redis-sentinel /runtime-config/sentinel.conf
+  configure.sh: |-
+    #!/bin/sh
+    # Get the name of the current pod and extract the StatefulSet name
+    echo "Determining current pod and statefulset..."
+    POD_NAME=$(hostname)
+    STATEFULSET_NAME=${POD_NAME%-*}
+    
+    # Load k8s client configuration
+    echo "Loading Kubernetes client configuration..."
+    APISERVER="https://kubernetes.default.svc"
+    TOKEN=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)
+    NAMESPACE=$(cat /var/run/secrets/kubernetes.io/serviceaccount/namespace)
+    CACERT="/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+    
+    # Check if the namespace has other pods
+    echo "Checking for other pods in the namespace..."
+    POD_NAMES=$(curl -s --cacert $CACERT \
+      -H "Authorization: Bearer $TOKEN" \
+      $APISERVER/api/v1/namespaces/$NAMESPACE/pods?labelSelector=app%3Dredis | jq -r '.items[]?.metadata.name | select(.)' | grep -v $POD_NAME)
+    
+    if [ -z "$POD_NAMES" ]; then
+      echo "No master found. Self electing as master."
+      echo "Updating sentinel configuration with self IP..."
+      MASTER_IP=$(getent hosts $POD_NAME.$STATEFULSET_NAME.$NAMESPACE.svc.cluster.local | awk '{ print $1 }')
+      sed -i -e "s|master_host|$MASTER_IP|g" /runtime-config/sentinel.conf 
+      sed -i -e "s|\$REDIS_PASSWORD|$REDIS_PASSWORD|g" /runtime-config/sentinel.conf 
+    
+      echo "Updating master configuration with self host..."
+      MASTER_HOST=$POD_NAME.$STATEFULSET_NAME.$NAMESPACE.svc.cluster.local
+      sed -i -e "s|master_host|$MASTER_HOST|g" /runtime-config/master.conf
+      sed -i -e "s|\$REDIS_PASSWORD|$REDIS_PASSWORD|g" /runtime-config/master.conf 
+      cp /runtime-config/master.conf /runtime-config/redis.conf
+      exit 0
+    fi
+    
+    # Check which pod is master
+    echo "Checking for master pod among: $POD_NAMES"
+    for POD in $POD_NAMES; do
+      REDISCLI_AUTH="$REDIS_PASSWORD" redis-cli -h $POD.$STATEFULSET_NAME.$NAMESPACE.svc.cluster.local -p 6379 INFO replication | grep -q "role:master"
+      if [ $? -eq 0 ]; then
+        echo "Master found: $POD"
+        # Update sentinel configuration with the master IP
+        echo "Updating sentinel configuration with master IP..."
+        MASTER_IP=$(getent hosts $POD.$STATEFULSET_NAME.$NAMESPACE.svc.cluster.local | awk '{ print $1 }')
+        sed -i -e "s|master_host|$MASTER_IP|g" /runtime-config/sentinel.conf 
+        sed -i -e "s|\$REDIS_PASSWORD|$REDIS_PASSWORD|g" /runtime-config/sentinel.conf 
+    
+        # Update replica
+        echo "Updating replica configuration with master host..."
+        MASTER_HOST=$POD.$STATEFULSET_NAME.$NAMESPACE.svc.cluster.local
+        sed -i -e "s|master_host|$MASTER_HOST|g" /runtime-config/replica.conf
+        sed -i -e "s|\$REDIS_PASSWORD|$REDIS_PASSWORD|g" /runtime-config/replica.conf
+        cp /runtime-config/replica.conf /runtime-config/redis.conf
+        exit 0
+      else 
+        echo "Pod $POD is not master."
+      fi
+    done
+    
+    echo "No master found. Self electing as master."
+    echo "Updating sentinel configuration with self IP..."
+    MASTER_IP=$(getent hosts $POD_NAME.$STATEFULSET_NAME.$NAMESPACE.svc.cluster.local | awk '{ print $1 }')
+    sed -i -e "s|master_host|$MASTER_IP|g" /runtime-config/sentinel.conf 
+    sed -i -e "s|\$REDIS_PASSWORD|$REDIS_PASSWORD|g" /runtime-config/sentinel.conf 
+    
+    echo "Updating master configuration with self host..."
+    MASTER_HOST=$POD_NAME.$STATEFULSET_NAME.$NAMESPACE.svc.cluster.local
+    sed -i -e "s|master_host|$MASTER_HOST|g" /runtime-config/master.conf
+    sed -i -e "s|\$REDIS_PASSWORD|$REDIS_PASSWORD|g" /runtime-config/master.conf 
+    cp /runtime-config/master.conf /runtime-config/redis.conf
+    exit 0
+    
+    
