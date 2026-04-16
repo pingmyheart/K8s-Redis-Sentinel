@@ -7,6 +7,6 @@ warnings.filterwarnings("ignore")
 
 setup(
     name='redis',
-    version='8.2.5.dev0',
+    version='8.2.6.dev0',
     packages=find_packages()
 )
